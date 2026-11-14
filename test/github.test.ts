@@ -1783,46 +1783,50 @@ it("rejects non-screenshot references before publishing", async () => {
   expect((await env.PR_SCREENSHOTS.list()).objects).toHaveLength(0);
 });
 
-it("lists public repository paths anonymously, scoped to a directory and paged", async () => {
+it("lists one public directory level anonymously without fetching the recursive tree", async () => {
   const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const url = new URL(String(input));
 
     if (url.pathname === `/repos/${repository}`)
       return Response.json({ default_branch: "main", private: false });
 
-    if (url.pathname === `/repos/${repository}/git/trees/feature%2Fx`) {
-      expect(url.searchParams.get("recursive")).toBe("1");
+    expect(url.searchParams.get("ref")).toBe("feature/x");
 
-      return Response.json({
-        truncated: false,
-        tree: [
-          { path: "README.md", type: "blob" },
-          { path: "packages", type: "tree" },
-          { path: "packages/usage", type: "tree" },
-          { path: "packages/usage/index.ts", type: "blob" },
-          { path: "packages/usage-other.ts", type: "blob" },
-          ...Array.from({ length: 1000 }, (_, i) => ({ path: `big/${i}.ts`, type: "blob" })),
-        ],
-      });
-    }
+    if (url.pathname === `/repos/${repository}/contents/packages/core/server%20src`)
+      return Response.json([
+        { path: "packages/core/server src/index.ts", type: "file" },
+        { path: "packages/core/server src/usage", type: "dir" },
+      ]);
+
+    if (url.pathname === `/repos/${repository}/contents/`)
+      return Response.json(
+        Array.from({ length: 205 }, (_, i) => ({ path: `f${i}.ts`, type: "file" })),
+      );
+
+    if (url.pathname === `/repos/${repository}/contents/README.md`)
+      return Response.json({ type: "file", path: "README.md" });
 
     throw new Error(`Unexpected GitHub request: ${url.pathname}`);
   });
 
   expect(
     await (
-      await execute({ action: "list_files", repository, ref: "feature/x", path: "packages/usage" })
+      await execute({
+        action: "list_files",
+        repository,
+        ref: "feature/x",
+        path: "packages/core/server src",
+      })
     ).json(),
-  ).toEqual({
+  ).toMatchObject({
     ok: true,
     result: {
       kind: "files",
       data: {
         page: 1,
         next_page: null,
-        total: 1,
-        truncated_by_github: false,
-        paths: ["packages/usage/index.ts"],
+        total: 2,
+        paths: ["packages/core/server src/index.ts", "packages/core/server src/usage/"],
       },
     },
   });
@@ -1833,14 +1837,14 @@ it("lists public repository paths anonymously, scoped to a directory and paged",
 
   expect(second).toMatchObject({
     ok: true,
-    result: {
-      data: {
-        page: 2,
-        next_page: null,
-        total: 1005,
-        paths: ["big/995.ts", "big/996.ts", "big/997.ts", "big/998.ts", "big/999.ts"],
-      },
-    },
+    result: { data: { page: 2, next_page: null, total: 205 } },
   });
+  expect(JSON.stringify(second)).toContain('["f200.ts","f201.ts","f202.ts","f203.ts","f204.ts"]');
+  expect(
+    await (
+      await execute({ action: "list_files", repository, ref: "feature/x", path: "README.md" })
+    ).json(),
+  ).toMatchObject({ ok: false, code: "not_a_directory" });
+  expect(fetch.mock.calls.some(([input]) => String(input).includes("/git/trees/"))).toBe(false);
   expect(fetch.mock.calls.some(([input]) => String(input).includes("/installation"))).toBe(false);
 });

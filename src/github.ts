@@ -69,12 +69,9 @@ const FileResponse = Schema.Struct({
   size: Schema.Number,
 });
 
-const TreeResponse = Schema.Struct({
-  truncated: Schema.Boolean,
-  tree: Schema.Array(Schema.Struct({ path: Schema.String, type: Schema.String })),
-});
+const DirectoryResponse = Schema.Array(Schema.Struct({ path: Schema.String, type: Schema.String }));
 
-const TREE_ENTRIES_PER_PAGE = 1000;
+const TREE_ENTRIES_PER_PAGE = 200;
 
 const CommitResponse = Schema.Struct({ commit: Schema.Struct({ sha: Sha }) });
 const PullResponse = Schema.Struct({ number: Schema.Number, html_url: Schema.String });
@@ -961,16 +958,29 @@ function makeGitHub(
 
     if (op.action === "list_files") {
       const page = op.page ?? 1;
-      const prefix = op.path === undefined ? "" : `${op.path}/`;
+      // One directory level via the contents API: the recursive tree of a large
+      // repository exceeds the 1 MiB provider response limit.
+      const directory = (op.path ?? "").split("/").map(encodeURIComponent).join("/");
 
-      const tree = yield* readApi(
+      const listing = yield* readApi(
         op.repository,
-        `/repos/${op.repository}/git/trees/${encodeURIComponent(op.ref)}?recursive=1`,
-      ).pipe(Effect.flatMap(decode(TreeResponse)));
+        `/repos/${op.repository}/contents/${directory}?ref=${encodeURIComponent(op.ref)}`,
+      ).pipe(
+        Effect.flatMap(
+          decode(Schema.Union([DirectoryResponse, Schema.Struct({ type: Schema.String })])),
+        ),
+      );
 
-      const entries = tree.tree
-        .filter((entry) => entry.path.startsWith(prefix))
-        .map((entry) => (entry.type === "tree" ? `${entry.path}/` : entry.path));
+      if (!Array.isArray(listing))
+        return {
+          ok: false,
+          code: "not_a_directory",
+          message: `${op.path} is not a directory; use read_file`,
+        };
+
+      const entries = listing.map((entry) =>
+        entry.type === "dir" ? `${entry.path}/` : entry.path,
+      );
 
       const start = (page - 1) * TREE_ENTRIES_PER_PAGE;
 
@@ -982,7 +992,7 @@ function makeGitHub(
             page,
             next_page: entries.length > start + TREE_ENTRIES_PER_PAGE ? page + 1 : null,
             total: entries.length,
-            truncated_by_github: tree.truncated,
+            note: "Lists one directory level; directories end in / and can be listed in turn.",
             paths: entries.slice(start, start + TREE_ENTRIES_PER_PAGE),
           },
         },

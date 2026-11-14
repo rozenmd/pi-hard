@@ -68,6 +68,7 @@ import {
   AnthropicProbe,
 } from "./anthropic";
 import { Account, Credentials } from "./credentials";
+import { observeUsage, recordUsageHeaders, usageReport, forgetUsage } from "./usage";
 import { CodexProtocol, startLogin, pollLogin, logout } from "./codex-login";
 import { GitHubAuth } from "./github-auth";
 import { exceptionDetails, redact } from "./diagnostics";
@@ -126,7 +127,10 @@ export class Agent extends DurableObject<Env> {
         baseUrl: provider.baseUrl,
         models: Object.values(OPENAI_CODEX_MODELS),
         // Load the SSE adapter with the Worker, not in an evictable generation request.
-        api: { stream, streamSimple },
+        api: {
+          stream: observeUsage(stream, this.usageObserver("openai-codex")),
+          streamSimple: observeUsage(streamSimple, this.usageObserver("openai-codex")),
+        },
         auth: {
           oauth: {
             ...oauth,
@@ -154,7 +158,7 @@ export class Agent extends DurableObject<Env> {
         },
       }),
     );
-    models.setProvider(claudeProvider());
+    models.setProvider(claudeProvider(this.usageObserver("anthropic")));
 
     const shell = {
       name: "shell",
@@ -211,7 +215,7 @@ export class Agent extends DurableObject<Env> {
       name: "github",
       description:
         "Publish screenshot evidence with upload_screenshot: repository, PR number, image (the r2:// reference returned in preview screenshot text), and caption (e.g. Before — desktop 1280×800). This explicitly copies that image to a PUBLIC R2 URL, expiring after 30 days, and posts an embedded image in a PR discussion comment. Only publish when the user has requested PR screenshots/evidence; inspect for secrets or private data first. Other conversation images remain private. Check comment_url: null means the upload succeeded but commenting failed; report comment_error and preserve the returned URL/markdown. Never claim a PR was updated in that case. " +
-        "Read UTF-8 files from any public GitHub repository using read_file with a full owner/repository, path and ref, and discover paths with list_files (repository, ref, optional directory path, page; directories end in /) instead of guessing; no App connection, approved account or sandbox checkout is needed for public reads. Private reads and all writes require the connected App and an approved account. List App repositories, create dolly/* branches, write files with an expected sha, and open pull requests without sandbox credentials. Review pull requests: read_pull_request (metadata, head SHA), list_pull_request_files (paged diff patches), list_pull_request_comments (discussion, inline threads, reviews) and read_pull_request_checks work anonymously for public repos. Workflow: read the PR, list its files, optionally check out the head SHA in the sandbox, then create_review with commit_id set to that head SHA and inline comments anchored by path, line and side (RIGHT for new or context lines, LEFT for removed lines; start_line for ranges). Lines must fall inside the diff hunks. Use event PENDING to leave the review unsubmitted for a human, COMMENT to publish; approvals and change requests are not available. reply_to_review_comment answers an existing thread. Never merges, closes or edits pull requests and never writes the default branch. Mutations are not automatically replayed; inspect GitHub (list_pull_request_comments) after an interrupted write before trying again, to avoid duplicate reviews.",
+        "Read UTF-8 files from any public GitHub repository using read_file with a full owner/repository, path and ref, and discover paths with list_files (repository, ref, optional directory path, page) instead of guessing; it lists one directory level, directories end in / and can be listed in turn; no App connection, approved account or sandbox checkout is needed for public reads. Private reads and all writes require the connected App and an approved account. List App repositories, create dolly/* branches, write files with an expected sha, and open pull requests without sandbox credentials. Review pull requests: read_pull_request (metadata, head SHA), list_pull_request_files (paged diff patches), list_pull_request_comments (discussion, inline threads, reviews) and read_pull_request_checks work anonymously for public repos. Workflow: read the PR, list its files, optionally check out the head SHA in the sandbox, then create_review with commit_id set to that head SHA and inline comments anchored by path, line and side (RIGHT for new or context lines, LEFT for removed lines; start_line for ranges). Lines must fall inside the diff hunks. Use event PENDING to leave the review unsubmitted for a human, COMMENT to publish; approvals and change requests are not available. reply_to_review_comment answers an existing thread. Never merges, closes or edits pull requests and never writes the default branch. Mutations are not automatically replayed; inspect GitHub (list_pull_request_comments) after an interrupted write before trying again, to avoid duplicate reviews.",
       parameters: githubSchema,
       replay: "unsafe",
       executionMode: "sequential",
@@ -1071,7 +1075,20 @@ export class Agent extends DurableObject<Env> {
     return Effect.runPromise(Effect.provide(pollLogin, this.services));
   }
   logout() {
-    return Effect.runPromise(Effect.provide(logout, this.services));
+    return Effect.runPromise(
+      Effect.provide(logout, this.services).pipe(
+        Effect.tap(() => Effect.promise(() => forgetUsage(this.ctx.storage, "openai-codex"))),
+      ),
+    );
+  }
+
+  private usageObserver(providerId: string) {
+    return (headers: Record<string, string>) =>
+      this.ctx.waitUntil(recordUsageHeaders(this.ctx.storage, providerId, headers).catch(() => {}));
+  }
+
+  usage(refresh: boolean) {
+    return usageReport(this.credentials, { refresh });
   }
 
   anthropicStatus() {
@@ -1090,6 +1107,7 @@ export class Agent extends DurableObject<Env> {
     return Effect.runPromise(
       this.credentials
         .locked(this.credentials.remove("anthropic"))
+        .pipe(Effect.tap(() => Effect.promise(() => forgetUsage(this.ctx.storage, "anthropic"))))
         .pipe(Effect.as({ connected: false })),
     );
   }

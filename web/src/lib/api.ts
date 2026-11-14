@@ -502,3 +502,31 @@ export function readSessions(value: string): readonly SavedSession[] {
 
   return Option.getOrElse(result, () => []);
 }
+
+const UsageWindow = Schema.Struct({
+  label: Schema.String,
+  usedPercent: Schema.Finite,
+  resetsAt: Schema.NullOr(Schema.Finite),
+});
+
+const UsageReport = Schema.Struct({
+  providerId: Schema.Literals(["openai-codex", "anthropic"]),
+  connected: Schema.Boolean,
+  usage: Schema.NullOr(
+    Schema.Struct({
+      windows: Schema.Array(UsageWindow),
+      observedAt: Schema.Finite,
+      source: Schema.Literals(["live", "headers"]),
+    }),
+  ),
+  error: Schema.optional(Schema.String),
+});
+
+export type UsageReport = typeof UsageReport.Type;
+
+/** Subscription limits per provider; `refresh` asks each provider for current numbers. */
+export async function usage(refresh = false) {
+  return Schema.decodeUnknownSync(
+    Schema.fromJsonString(Schema.Struct({ providers: Schema.Array(UsageReport) })),
+  )(await request(refresh ? "/usage?refresh=1" : "/usage")).providers;
+}
