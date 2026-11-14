@@ -38,7 +38,9 @@ function claudeReply(extra: Record<string, string>) {
   );
 }
 
-const call = (path: string, method = "GET", body?: object) =>
+type UsageRequest = { token: string } | { model: string } | { content: string; requestId: string };
+
+const call = (path: string, method = "GET", body?: UsageRequest) =>
   SELF.fetch(`https://worker/api${path}`, {
     method,
     headers,
@@ -174,7 +176,7 @@ it("reads ChatGPT usage with the account id from the access token, and clears it
 
   const now = Date.now();
 
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+  const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
     expect(String(url)).toBe("https://chatgpt.com/backend-api/wham/usage");
     expect(new Headers(init?.headers).get("chatgpt-account-id")).toBe("acct-usage");
 
@@ -197,6 +199,16 @@ it("reads ChatGPT usage with the account id from the access token, and clears it
     { label: "7d", usedPercent: 71.6, resetsAt: 2_000_000_000_000 },
   ]);
   expect(report?.usage?.windows[0]?.resetsAt).toBeGreaterThanOrEqual(now + 600_000);
+
+  fetch.mockResolvedValueOnce(
+    Response.json({
+      rate_limit: { primary_window: { used_percent: "not-a-number" } },
+    }),
+  );
+  expect((await usage(true))["openai-codex"]).toMatchObject({
+    usage: report?.usage,
+    error: expect.any(String),
+  });
 
   await call("/auth/codex", "DELETE");
   expect((await usage())["openai-codex"]).toMatchObject({ connected: false, usage: null });

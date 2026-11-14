@@ -1,5 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as Match from "effect/Match";
+import type { Api, StreamFunction } from "@earendil-works/pi-ai";
 import type { Credentials } from "./credentials";
 
 /** One rolling subscription limit, e.g. Claude's 5-hour window or Codex's weekly window. */
@@ -32,8 +35,34 @@ const key = (providerId: string) => `usage:${providerId}`;
 
 const clamp = (value: number) => Math.min(100, Math.max(0, value));
 
-const finite = (value: unknown) =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
+const AnthropicUsage = Schema.Record(Schema.String, Schema.Json);
+
+const AnthropicWindow = Schema.Struct({
+  utilization: Schema.Finite,
+  resets_at: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
+const CodexWindow = Schema.Struct({
+  used_percent: Schema.optional(Schema.NullOr(Schema.Finite)),
+  limit_window_seconds: Schema.optional(Schema.NullOr(Schema.Finite)),
+  reset_after_seconds: Schema.optional(Schema.NullOr(Schema.Finite)),
+  reset_at: Schema.optional(Schema.NullOr(Schema.Finite)),
+});
+
+const CodexUsage = Schema.Struct({
+  rate_limit: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        primary_window: Schema.optional(Schema.NullOr(CodexWindow)),
+        secondary_window: Schema.optional(Schema.NullOr(CodexWindow)),
+      }),
+    ),
+  ),
+});
+
+const ChatGPTClaims = Schema.Struct({
+  "https://api.openai.com/auth": Schema.Struct({ chatgpt_account_id: Schema.String }),
+});
 
 const numeric = (value: string | undefined) => {
   if (value === undefined || value.trim() === "") return null;
@@ -106,20 +135,17 @@ export function codexHeaderWindows(headers: Record<string, string>, now: number)
 }
 
 /** GET api.anthropic.com/api/oauth/usage: `{ five_hour: { utilization: 0–100, resets_at } , … }`. */
-export function anthropicUsageWindows(body: unknown): UsageWindow[] {
-  if (!body || typeof body !== "object") return [];
+export function anthropicUsageWindows(body: typeof AnthropicUsage.Type): UsageWindow[] {
   const windows: UsageWindow[] = [];
 
   for (const [name, value] of Object.entries(body)) {
-    if (!value || typeof value !== "object") continue;
-    const utilization = finite((value as { utilization?: unknown }).utilization);
+    const window = Option.getOrUndefined(Schema.decodeUnknownOption(AnthropicWindow)(value));
 
-    if (utilization === null) continue;
-    const resets = (value as { resets_at?: unknown }).resets_at;
-    const resetsAt = typeof resets === "string" ? Date.parse(resets) : NaN;
+    if (!window) continue;
+    const resetsAt = window.resets_at ? Date.parse(window.resets_at) : NaN;
     windows.push({
       label: anthropicLabel(name),
-      usedPercent: clamp(utilization),
+      usedPercent: clamp(window.utilization),
       resetsAt: Number.isFinite(resetsAt) ? resetsAt : null,
     });
   }
@@ -127,28 +153,21 @@ export function anthropicUsageWindows(body: unknown): UsageWindow[] {
   return sortWindows(windows);
 }
 
-type CodexWindow = {
-  used_percent?: unknown;
-  limit_window_seconds?: unknown;
-  reset_after_seconds?: unknown;
-  reset_at?: unknown;
-};
-
 /** GET chatgpt.com/backend-api/wham/usage: `{ rate_limit: { primary_window, secondary_window } }`. */
-export function codexUsageWindows(body: unknown, now: number): UsageWindow[] {
-  const limit = (body as { rate_limit?: Record<string, CodexWindow | null> } | null)?.rate_limit;
+export function codexUsageWindows(body: typeof CodexUsage.Type, now: number): UsageWindow[] {
+  const limit = body.rate_limit;
 
-  if (!limit || typeof limit !== "object") return [];
+  if (!limit) return [];
   const windows: UsageWindow[] = [];
 
   for (const slot of ["primary_window", "secondary_window"] as const) {
     const window = limit[slot];
-    const used = finite(window?.used_percent);
+    const used = window?.used_percent ?? null;
 
     if (!window || used === null) continue;
-    const seconds = finite(window.limit_window_seconds);
-    const resetAt = finite(window.reset_at);
-    const resetAfter = finite(window.reset_after_seconds);
+    const seconds = window.limit_window_seconds ?? null;
+    const resetAt = window.reset_at ?? null;
+    const resetAfter = window.reset_after_seconds ?? null;
     windows.push({
       label: windowLabel(
         seconds === null ? null : Math.round(seconds / 60),
@@ -165,7 +184,12 @@ export function codexUsageWindows(body: unknown, now: number): UsageWindow[] {
 
 /** Shortest windows first, so 5h precedes 7d and model-specific weekly limits come last. */
 function sortWindows(windows: UsageWindow[]) {
-  const rank = (label: string) => (label === "5h" ? 0 : label === "7d" ? 1 : 2);
+  const rank = (label: string) =>
+    Match.value(label).pipe(
+      Match.when("5h", () => 0),
+      Match.when("7d", () => 1),
+      Match.orElse(() => 2),
+    );
 
   return windows.sort((a, b) => rank(a.label) - rank(b.label));
 }
@@ -177,16 +201,11 @@ export function chatgptAccountId(accessToken: string): string | null {
 
     if (!payload) return null;
 
-    const json = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))) as Record<
-      string,
-      unknown
-    >;
+    const json = Schema.decodeUnknownSync(ChatGPTClaims)(
+      JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))),
+    );
 
-    const auth = json["https://api.openai.com/auth"] as
-      | { chatgpt_account_id?: unknown }
-      | undefined;
-
-    return typeof auth?.chatgpt_account_id === "string" ? auth.chatgpt_account_id : null;
+    return json["https://api.openai.com/auth"].chatgpt_account_id;
   } catch {
     return null;
   }
@@ -199,19 +218,17 @@ export async function recordUsageHeaders(
   headers: Record<string, string>,
   now = Date.now(),
 ) {
+  if (providerId !== "anthropic" && providerId !== "openai-codex") return;
+
   const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
 
   const windows =
-    providerId === "anthropic"
-      ? anthropicHeaderWindows(lower)
-      : providerId === "openai-codex"
-        ? codexHeaderWindows(lower, now)
-        : [];
+    providerId === "anthropic" ? anthropicHeaderWindows(lower) : codexHeaderWindows(lower, now);
 
   if (windows.length === 0) return;
 
   const usage: ProviderUsage = {
-    providerId: providerId as ProviderUsage["providerId"],
+    providerId,
     windows,
     observedAt: now,
     source: "headers",
@@ -236,13 +253,13 @@ async function fetchLive(
 
     if (!response.ok) throw new Error(`Anthropic usage returned HTTP ${response.status}`);
 
-    return anthropicUsageWindows(await response.json());
+    return anthropicUsageWindows(Schema.decodeUnknownSync(AnthropicUsage)(await response.json()));
   }
 
-  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  const headers = new Headers({ authorization: `Bearer ${token}` });
   const account = chatgptAccountId(token);
 
-  if (account) headers["chatgpt-account-id"] = account;
+  if (account) headers.set("chatgpt-account-id", account);
 
   const response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
     headers,
@@ -252,7 +269,7 @@ async function fetchLive(
 
   if (!response.ok) throw new Error(`ChatGPT usage returned HTTP ${response.status}`);
 
-  return codexUsageWindows(await response.json(), now);
+  return codexUsageWindows(Schema.decodeUnknownSync(CodexUsage)(await response.json()), now);
 }
 
 /**
@@ -314,18 +331,15 @@ export async function forgetUsage(storage: DurableObjectStorage, providerId: str
   await storage.delete(key(providerId));
 }
 
-type Observable<O> = (model: never, context: never, options?: O) => unknown;
-
 /** Wrap a Pi stream function so every provider response reports its limit headers. */
-export function observeUsage<
-  F extends Observable<{
-    onResponse?: (response: { headers: Record<string, string> }, model: never) => unknown;
-  }>,
->(fn: F, onHeaders: (headers: Record<string, string>) => void): F {
-  return ((model: never, context: never, options?: Parameters<F>[2]) =>
+export function observeUsage<TApi extends Api>(
+  fn: StreamFunction<TApi>,
+  onHeaders: (headers: Record<string, string>) => void,
+): StreamFunction<TApi> {
+  return (model, context, options) =>
     fn(model, context, {
       ...options,
-      onResponse: async (response: { headers: Record<string, string> }, m: never) => {
+      onResponse: async (response, m) => {
         try {
           onHeaders(response.headers);
         } catch {
@@ -334,5 +348,5 @@ export function observeUsage<
 
         await options?.onResponse?.(response, m);
       },
-    })) as F;
+    });
 }
