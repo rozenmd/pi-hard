@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vite-plus/test";
 import { runInDurableObject } from "cloudflare:test";
+import { Files } from "@cloudflare/sandbox";
 import * as Effect from "effect/Effect";
 import type { Env as WorkerEnv } from "../../src/env";
 import { workspaceConfig } from "../../src/workspace";
@@ -11,11 +12,21 @@ declare global {
   }
 }
 
-it("privately previews a server and stops it without destroying workspace files", async () => {
+it("privately previews without an image-provided runtime directory and preserves workspace files", async () => {
   const sandbox = env.SANDBOX.getByName(crypto.randomUUID());
 
   try {
     await sandbox.run("printf preserved > /workspace/preview-proof.txt");
+    // Older/restored containers need not have the current image's runtime directory.
+    await runInDurableObject(sandbox, async (_, state) => {
+      if (!state.container) throw new Error("Missing test container");
+      await new Files(state.container).remove("/run/sandbox", {
+        recursive: true,
+        force: true,
+        user: "0:0",
+      });
+    });
+    expect(await sandbox.run("test ! -e /run/sandbox")).toMatchObject({ exitCode: 0 });
     await sandbox.previewStart(
       `node -e 'require("http").createServer((req,res)=>res.end("preview:"+req.url)).listen(3000,"0.0.0.0")'`,
       3000,

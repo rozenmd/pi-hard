@@ -20,6 +20,10 @@ import * as Schema from "effect/Schema";
 import previewSupervisor from "../container/preview.py?raw";
 import skillsInventory from "../container/skills.py?raw";
 
+const PREVIEW_DIRECTORY = "/workspace/.dolly-preview";
+const PREVIEW_SUPERVISOR = `${PREVIEW_DIRECTORY}/supervisor.py`;
+const PREVIEW_LOG = `${PREVIEW_DIRECTORY}/preview.log`;
+
 type RunningPreview = {
   token: string;
   port: number;
@@ -692,17 +696,14 @@ export class Sandbox extends DurableObject<Env> {
           if (occupied) throw new Error("Preview port is already in use; choose another port");
           const workspace = await this.ctx.storage.get("workspace");
 
-          // Use the supervisor bundled with the current Worker.
-          await new Files(container).writeFile("/run/sandbox/dolly-preview.py", previewSupervisor);
+          // Restored containers may predate image-provided runtime directories.
+          // Keep this outside the checkout and use the current Worker's supervisor.
+          const files = new Files(container);
+          await files.mkdir(PREVIEW_DIRECTORY, { recursive: true });
+          await files.writeFile(PREVIEW_SUPERVISOR, previewSupervisor);
 
           const process = await container.exec(
-            [
-              "python3",
-              "/run/sandbox/dolly-preview.py",
-              command,
-              String(PREVIEW_TTL_MS / 1000),
-              "/run/sandbox/preview.log",
-            ],
+            ["python3", PREVIEW_SUPERVISOR, command, String(PREVIEW_TTL_MS / 1000), PREVIEW_LOG],
             {
               cwd: workspace ? "/workspace/repo" : "/workspace",
               stdout: "ignore",
@@ -767,7 +768,7 @@ export class Sandbox extends DurableObject<Env> {
 
     if (this.ctx.container?.running) {
       try {
-        const response = await new Files(this.ctx.container).readFile("/run/sandbox/preview.log", {
+        const response = await new Files(this.ctx.container).readFile(PREVIEW_LOG, {
           signal: AbortSignal.timeout(5000),
         });
 
