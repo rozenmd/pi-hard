@@ -10,7 +10,7 @@ import { rpc } from "./operations";
 import { githubRoutes, githubSetupRoutes } from "./github-routes";
 import { authorizeAccess } from "./access";
 import { AgentApi } from "./api";
-import { ChildRequest, NewSession } from "./models";
+import { ChildRequest, NewSession, SessionSettings } from "./models";
 import { OperationError } from "./operations";
 import { exceptionDetails } from "./diagnostics";
 import { AnthropicSetup, AnthropicProbe } from "./anthropic";
@@ -359,6 +359,28 @@ app.put("/api/sessions/:id", (c) =>
   ),
 );
 
+app.put("/api/sessions/:id/settings", (c) =>
+  handle(
+    c,
+    Effect.gen(function* () {
+      const input = yield* Effect.tryPromise(() => c.req.json<unknown>()).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(SessionSettings)),
+        Effect.mapError(
+          () =>
+            new InvalidInput({
+              message: "Expected thinkingLevel: off, minimal, low, medium, high, xhigh or max",
+            }),
+        ),
+      );
+
+      const agent = yield* AgentApi;
+      const result = yield* agent.configureSession(c.req.param("id"), input);
+
+      return result ? c.json(result) : c.json({ error: "Session not found" }, 404);
+    }),
+  ),
+);
+
 app.post("/api/sessions", (c) =>
   handle(
     c,
@@ -376,7 +398,12 @@ app.post("/api/sessions", (c) =>
       );
 
       const agent = yield* AgentApi;
-      const result = yield* agent.createSession(parsed.model, parsed.workspace);
+
+      const result = yield* agent.createSession(
+        parsed.model,
+        parsed.workspace,
+        parsed.thinkingLevel,
+      );
 
       return c.json(result, "error" in result ? 409 : 201);
     }),

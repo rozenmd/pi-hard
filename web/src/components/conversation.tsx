@@ -1,3 +1,4 @@
+import { DEFAULT_EFFORT, EffortPicker, modelName } from "./model-select";
 import {
   useEffect,
   useLayoutEffect,
@@ -310,6 +311,8 @@ export function Composer({
   pending,
   running,
   model,
+  thinkingLevel,
+  onThinkingLevel,
   draftKey,
   queued,
   onSteerQueued,
@@ -323,6 +326,8 @@ export function Composer({
   pending: boolean;
   running: boolean;
   model: string;
+  thinkingLevel?: string;
+  onThinkingLevel: (level: string) => void;
   draftKey: string;
   queued: readonly QueuedMessage[];
   onSteerQueued: (id: number) => void;
@@ -437,7 +442,14 @@ export function Composer({
               count={attachments.length}
               onFiles={(files) => void input.add(files)}
             />
-            <span className="composer-model">{model}</span>
+            <span className="composer-model" title={model}>
+              {modelName(model)}
+            </span>
+            <EffortPicker
+              value={thinkingLevel ?? DEFAULT_EFFORT}
+              placement="above"
+              onChange={onThinkingLevel}
+            />
             {running && !content.trim() ? (
               <button
                 type="button"

@@ -3,6 +3,8 @@ import * as Schema from "effect/Schema";
 export const SavedSession = Schema.Struct({
   id: Schema.String,
   model: Schema.String,
+  /** Pi thinking level; absent for sessions saved before it was reported. */
+  thinkingLevel: Schema.optional(Schema.String),
   title: Schema.String,
   repository: Schema.String,
   updatedAt: Schema.Number,
