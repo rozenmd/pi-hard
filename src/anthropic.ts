@@ -8,6 +8,7 @@ import { Credentials } from "./credentials";
 import { AnthropicModel } from "./models";
 import { redact } from "./diagnostics";
 import { attempt } from "./operations";
+import { observeUsage } from "./usage";
 
 type ProbeObservation = {
   value: {
@@ -25,7 +26,7 @@ export const AnthropicSetup = Schema.Struct({
 export const AnthropicProbe = Schema.Struct({ model: Schema.optional(AnthropicModel) });
 
 /** Eager HTTP adapter: never load the Node-only interactive OAuth flow or run a CLI in the Worker. */
-export function claudeProvider() {
+export function claudeProvider(onHeaders?: (headers: Record<string, string>) => void) {
   const provider = anthropicProvider();
 
   return createProvider({
@@ -34,7 +35,12 @@ export function claudeProvider() {
     baseUrl: provider.baseUrl,
     models: provider.getModels(),
     auth: { apiKey: provider.auth.apiKey },
-    api: { stream, streamSimple },
+    api: onHeaders
+      ? {
+          stream: observeUsage(stream, onHeaders),
+          streamSimple: observeUsage(streamSimple, onHeaders),
+        }
+      : { stream, streamSimple },
   });
 }
 

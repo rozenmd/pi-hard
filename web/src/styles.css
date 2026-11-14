@@ -1533,7 +1533,8 @@ select.input {
   width: 16px;
   height: 16px;
 }
-.repository-refresh .spin {
+.repository-refresh .spin,
+.usage-header .spin {
   animation: spin 0.9s linear infinite;
 }
 @keyframes spin {
@@ -1772,4 +1773,78 @@ select.input {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
+}
+
+/* Subscription usage limits */
+.usage {
+  margin-top: 8px;
+}
+.usage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.usage-header h2 {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.usage-header .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.usage-account {
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #1d1d1d;
+  border: 1px solid var(--line);
+}
+.usage-account-name {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 10px;
+  font-weight: 500;
+}
+.usage-account-name .muted {
+  font-size: 12px;
+  font-weight: 400;
+}
+.usage-bars {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 16px;
+}
+.usage-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.usage-bar-label {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+}
+.usage-bar-track {
+  height: 4px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 10%);
+  overflow: hidden;
+}
+.usage-bar-track > div {
+  height: 100%;
+  border-radius: 2px;
+  background: #cfcfcf;
+}
+.usage-bar-track.warning > div {
+  background: var(--amber);
+}
+.usage-bar-track.critical > div {
+  background: var(--red);
+}
+.usage-bar-reset {
+  color: var(--faint);
 }

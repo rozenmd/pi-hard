@@ -65,6 +65,7 @@ import {
   AnthropicProbe,
 } from "./anthropic";
 import { Account, Credentials } from "./credentials";
+import { observeUsage, recordUsageHeaders, usageReport, forgetUsage } from "./usage";
 import { CodexProtocol, startLogin, pollLogin, logout } from "./codex-login";
 import { GitHubAuth } from "./github-auth";
 import { exceptionDetails, redact } from "./diagnostics";
@@ -123,7 +124,10 @@ export class Agent extends DurableObject<Env> {
         baseUrl: provider.baseUrl,
         models: Object.values(OPENAI_CODEX_MODELS),
         // Load the SSE adapter with the Worker, not in an evictable generation request.
-        api: { stream, streamSimple },
+        api: {
+          stream: observeUsage(stream, this.usageObserver("openai-codex")),
+          streamSimple: observeUsage(streamSimple, this.usageObserver("openai-codex")),
+        },
         auth: {
           oauth: {
             ...oauth,
@@ -151,7 +155,7 @@ export class Agent extends DurableObject<Env> {
         },
       }),
     );
-    models.setProvider(claudeProvider());
+    models.setProvider(claudeProvider(this.usageObserver("anthropic")));
 
     const shell = {
       name: "shell",
@@ -1068,7 +1072,20 @@ export class Agent extends DurableObject<Env> {
     return Effect.runPromise(Effect.provide(pollLogin, this.services));
   }
   logout() {
-    return Effect.runPromise(Effect.provide(logout, this.services));
+    return Effect.runPromise(
+      Effect.provide(logout, this.services).pipe(
+        Effect.tap(() => Effect.promise(() => forgetUsage(this.ctx.storage, "openai-codex"))),
+      ),
+    );
+  }
+
+  private usageObserver(providerId: string) {
+    return (headers: Record<string, string>) =>
+      this.ctx.waitUntil(recordUsageHeaders(this.ctx.storage, providerId, headers).catch(() => {}));
+  }
+
+  usage(refresh: boolean) {
+    return usageReport(this.credentials, { refresh });
   }
 
   anthropicStatus() {
@@ -1087,6 +1104,7 @@ export class Agent extends DurableObject<Env> {
     return Effect.runPromise(
       this.credentials
         .locked(this.credentials.remove("anthropic"))
+        .pipe(Effect.tap(() => Effect.promise(() => forgetUsage(this.ctx.storage, "anthropic"))))
         .pipe(Effect.as({ connected: false })),
     );
   }
