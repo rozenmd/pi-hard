@@ -244,6 +244,19 @@ app.delete("/api/auth/codex", (c) =>
   ),
 );
 
+app.get("/api/usage", (c) =>
+  handle(
+    c,
+    Effect.gen(function* () {
+      const refresh = c.req.query("refresh") === "1";
+
+      return c.json({
+        providers: yield* rpc("usage.read", async () => await owner(c).usage(refresh)),
+      });
+    }),
+  ),
+);
+
 app.get("/api/auth/anthropic", (c) =>
   handle(
     c,

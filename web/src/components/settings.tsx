@@ -14,6 +14,7 @@ import { CodexLogin } from "./codex-login";
 import { ingressHook } from "./github";
 import { RepositoryPicker } from "./repositories";
 import { Input } from "./ui";
+import { UsageLimits } from "./usage";
 
 type Connected = Extract<AuthState["github"], { connected: true }>;
 
@@ -230,6 +231,7 @@ export function ModelsSettings() {
       )}
       <AnthropicConnection variant="row" onConnection={() => {}} />
       {alert}
+      <UsageLimits key={String(codex)} />
     </Section>
   );
 }
