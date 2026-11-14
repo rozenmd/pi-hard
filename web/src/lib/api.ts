@@ -38,7 +38,11 @@ export function queueFromSnapshot(snapshot: typeof Snapshot.Type): QueuedMessage
   });
 }
 
-export const Session = Schema.Struct({ id: Schema.String, model: Schema.String });
+export const Session = Schema.Struct({
+  id: Schema.String,
+  model: Schema.String,
+  thinkingLevel: Schema.optional(Schema.String),
+});
 
 export { SavedSession } from "../../../src/session-contracts";
 
@@ -54,6 +58,8 @@ export function sessionBody(source: SavedSession, snapshot: typeof Snapshot.Type
   const body: ApiBody = {};
 
   if (source.model !== "Existing session") body.model = source.model;
+
+  if (source.thinkingLevel) body.thinkingLevel = source.thinkingLevel;
   const state = snapshot?.docs["app.workspace"];
 
   if (state !== undefined) {
@@ -347,6 +353,7 @@ export type ApiBody = {
   requestId?: string;
   images?: readonly { mimeType: string; data: string }[];
   model?: string;
+  thinkingLevel?: string;
   workspace?: { repository: string; ref?: string; networkHosts?: readonly string[] };
   repository?: string;
   owner?: string;

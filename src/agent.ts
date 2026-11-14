@@ -55,6 +55,9 @@ import {
   SessionModel,
   modelProvider,
   DEFAULT_CLAUDE_MODEL,
+  DEFAULT_THINKING_LEVEL,
+  SessionSettings,
+  ThinkingLevel,
 } from "./models";
 import {
   claudeProvider,
@@ -65,7 +68,13 @@ import {
   AnthropicProbe,
 } from "./anthropic";
 import { Account, Credentials } from "./credentials";
-import { observeUsage, recordUsageHeaders, usageReport, forgetUsage } from "./usage";
+import {
+  observeUsage,
+  recordUsageHeaders,
+  usageReport,
+  forgetUsage,
+  type ProviderUsage,
+} from "./usage";
 import { CodexProtocol, startLogin, pollLogin, logout } from "./codex-login";
 import { GitHubAuth } from "./github-auth";
 import { exceptionDetails, redact } from "./diagnostics";
@@ -460,7 +469,7 @@ export class Agent extends DurableObject<Env> {
             await indexSession(tx, conversation.id);
             await configure(tx, conversation.id, {
               model: { provider: "openai-codex", modelId: this.env.CODEX_MODEL },
-              thinkingLevel: "low",
+              thinkingLevel: DEFAULT_THINKING_LEVEL,
               maxTurns: 100,
               tools,
             });
@@ -1081,7 +1090,7 @@ export class Agent extends DurableObject<Env> {
     );
   }
 
-  private usageObserver(providerId: string) {
+  private usageObserver(providerId: ProviderUsage["providerId"]) {
     return (headers: Record<string, string>) =>
       this.ctx.waitUntil(recordUsageHeaders(this.ctx.storage, providerId, headers).catch(() => {}));
   }
@@ -1111,7 +1120,31 @@ export class Agent extends DurableObject<Env> {
     );
   }
 
-  createSession(model?: string, workspace?: typeof WorkspaceInput.Type) {
+  configureSession(id: string, settings: typeof SessionSettings.Type) {
+    return Effect.runPromise(
+      Effect.gen({ self: this }, function* () {
+        const conversation = yield* this.conversation(id);
+
+        if (Option.isNone(conversation)) return undefined;
+
+        // Applies from the next model request; a running turn keeps its current request.
+        yield* attempt("pi.thinking.configure", () =>
+          conversation.value.configure(
+            { thinkingLevel: settings.thinkingLevel },
+            BACKGROUND_CONTEXT,
+          ),
+        );
+
+        return { thinkingLevel: settings.thinkingLevel };
+      }),
+    );
+  }
+
+  createSession(
+    model?: string,
+    workspace?: typeof WorkspaceInput.Type,
+    thinkingLevel?: typeof ThinkingLevel.Type,
+  ) {
     return Effect.runPromise(
       Effect.gen({ self: this }, function* () {
         const codex = yield* this.credentials.get("openai-codex");
@@ -1147,7 +1180,10 @@ export class Agent extends DurableObject<Env> {
           this.harness.createConversation(
             {
               ownership: { kind: "ownerless" },
-              agent: { model: { provider, modelId } },
+              agent: {
+                model: { provider, modelId },
+                thinkingLevel: thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+              },
             },
             BACKGROUND_CONTEXT,
           ),
@@ -1191,7 +1227,7 @@ export class Agent extends DurableObject<Env> {
             ),
           );
 
-        return { id, model: modelId };
+        return { id, model: modelId, thinkingLevel: thinkingLevel ?? DEFAULT_THINKING_LEVEL };
       }),
     );
   }

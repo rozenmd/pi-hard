@@ -1848,3 +1848,15 @@ select.input {
 .usage-bar-reset {
   color: var(--faint);
 }
+.effort-picker .picker-menu {
+  min-width: 180px;
+}
+.picker.opens-up .picker-menu {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+.composer-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

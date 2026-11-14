@@ -1,8 +1,14 @@
+import type {
+  Api,
+  Model,
+  ProviderResponse,
+  StreamFunction,
+  StreamOptions,
+} from "@earendil-works/pi-ai";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 import * as Match from "effect/Match";
-import type { Api, StreamFunction } from "@earendil-works/pi-ai";
+import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
 import type { Credentials } from "./credentials";
 
 /** One rolling subscription limit, e.g. Claude's 5-hour window or Codex's weekly window. */
@@ -34,35 +40,6 @@ const PROVIDERS = ["openai-codex", "anthropic"] as const;
 const key = (providerId: string) => `usage:${providerId}`;
 
 const clamp = (value: number) => Math.min(100, Math.max(0, value));
-
-const AnthropicUsage = Schema.Record(Schema.String, Schema.Json);
-
-const AnthropicWindow = Schema.Struct({
-  utilization: Schema.Finite,
-  resets_at: Schema.optional(Schema.NullOr(Schema.String)),
-});
-
-const CodexWindow = Schema.Struct({
-  used_percent: Schema.optional(Schema.NullOr(Schema.Finite)),
-  limit_window_seconds: Schema.optional(Schema.NullOr(Schema.Finite)),
-  reset_after_seconds: Schema.optional(Schema.NullOr(Schema.Finite)),
-  reset_at: Schema.optional(Schema.NullOr(Schema.Finite)),
-});
-
-const CodexUsage = Schema.Struct({
-  rate_limit: Schema.optional(
-    Schema.NullOr(
-      Schema.Struct({
-        primary_window: Schema.optional(Schema.NullOr(CodexWindow)),
-        secondary_window: Schema.optional(Schema.NullOr(CodexWindow)),
-      }),
-    ),
-  ),
-});
-
-const ChatGPTClaims = Schema.Struct({
-  "https://api.openai.com/auth": Schema.Struct({ chatgpt_account_id: Schema.String }),
-});
 
 const numeric = (value: string | undefined) => {
   if (value === undefined || value.trim() === "") return null;
@@ -126,26 +103,33 @@ export function codexHeaderWindows(headers: Record<string, string>, now: number)
     windows.push({
       label: windowLabel(minutes, slot === "primary" ? "5h" : "7d"),
       usedPercent: clamp(used),
-      resetsAt:
-        resetAt !== null ? resetAt * 1000 : resetAfter !== null ? now + resetAfter * 1000 : null,
+      resetsAt: resetTime(resetAt, resetAfter, now),
     });
   }
 
   return windows;
 }
 
+const AnthropicWindow = Schema.Struct({
+  utilization: Schema.Finite,
+  resets_at: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
+/** Windows are keyed by name; values that aren't windows (e.g. `extra_usage`) are skipped. */
+export const AnthropicUsage = Schema.Record(Schema.String, Schema.Unknown);
+
 /** GET api.anthropic.com/api/oauth/usage: `{ five_hour: { utilization: 0–100, resets_at } , … }`. */
 export function anthropicUsageWindows(body: typeof AnthropicUsage.Type): UsageWindow[] {
   const windows: UsageWindow[] = [];
 
   for (const [name, value] of Object.entries(body)) {
-    const window = Option.getOrUndefined(Schema.decodeUnknownOption(AnthropicWindow)(value));
+    const window = Schema.decodeUnknownOption(AnthropicWindow)(value);
 
-    if (!window) continue;
-    const resetsAt = window.resets_at ? Date.parse(window.resets_at) : NaN;
+    if (Option.isNone(window)) continue;
+    const resetsAt = Date.parse(window.value.resets_at ?? "");
     windows.push({
       label: anthropicLabel(name),
-      usedPercent: clamp(window.utilization),
+      usedPercent: clamp(window.value.utilization),
       resetsAt: Number.isFinite(resetsAt) ? resetsAt : null,
     });
   }
@@ -153,18 +137,30 @@ export function anthropicUsageWindows(body: typeof AnthropicUsage.Type): UsageWi
   return sortWindows(windows);
 }
 
+const OptionalFinite = Schema.optional(Schema.NullOr(Schema.Finite));
+
+const CodexWindow = Schema.Struct({
+  used_percent: Schema.Finite,
+  limit_window_seconds: OptionalFinite,
+  reset_after_seconds: OptionalFinite,
+  reset_at: OptionalFinite,
+});
+
+export const CodexUsage = Schema.Struct({
+  rate_limit: Schema.Struct({
+    primary_window: Schema.optional(Schema.NullOr(CodexWindow)),
+    secondary_window: Schema.optional(Schema.NullOr(CodexWindow)),
+  }),
+});
+
 /** GET chatgpt.com/backend-api/wham/usage: `{ rate_limit: { primary_window, secondary_window } }`. */
 export function codexUsageWindows(body: typeof CodexUsage.Type, now: number): UsageWindow[] {
-  const limit = body.rate_limit;
-
-  if (!limit) return [];
   const windows: UsageWindow[] = [];
 
   for (const slot of ["primary_window", "secondary_window"] as const) {
-    const window = limit[slot];
-    const used = window?.used_percent ?? null;
+    const window = body.rate_limit[slot];
 
-    if (!window || used === null) continue;
+    if (!window) continue;
     const seconds = window.limit_window_seconds ?? null;
     const resetAt = window.reset_at ?? null;
     const resetAfter = window.reset_after_seconds ?? null;
@@ -173,13 +169,19 @@ export function codexUsageWindows(body: typeof CodexUsage.Type, now: number): Us
         seconds === null ? null : Math.round(seconds / 60),
         slot === "primary_window" ? "5h" : "7d",
       ),
-      usedPercent: clamp(used),
-      resetsAt:
-        resetAt !== null ? resetAt * 1000 : resetAfter !== null ? now + resetAfter * 1000 : null,
+      usedPercent: clamp(window.used_percent),
+      resetsAt: resetTime(resetAt, resetAfter, now),
     });
   }
 
   return windows;
+}
+
+/** An absolute reset (epoch seconds) wins over a relative one (seconds from now). */
+function resetTime(resetAt: number | null, resetAfter: number | null, now: number) {
+  if (resetAt !== null) return resetAt * 1000;
+
+  return resetAfter === null ? null : now + resetAfter * 1000;
 }
 
 /** Shortest windows first, so 5h precedes 7d and model-specific weekly limits come last. */
@@ -194,32 +196,40 @@ function sortWindows(windows: UsageWindow[]) {
   return windows.sort((a, b) => rank(a.label) - rank(b.label));
 }
 
+const AccessTokenClaims = Schema.fromJsonString(
+  Schema.Struct({
+    "https://api.openai.com/auth": Schema.optional(
+      Schema.Struct({ chatgpt_account_id: Schema.optional(Schema.String) }),
+    ),
+  }),
+);
+
 /** The ChatGPT account id lives in the access token's `https://api.openai.com/auth` claim. */
 export function chatgptAccountId(accessToken: string): string | null {
+  const payload = accessToken.split(".")[1];
+
+  if (!payload) return null;
+  let json: string;
+
   try {
-    const payload = accessToken.split(".")[1];
-
-    if (!payload) return null;
-
-    const json = Schema.decodeUnknownSync(ChatGPTClaims)(
-      JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))),
-    );
-
-    return json["https://api.openai.com/auth"].chatgpt_account_id;
+    json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
   } catch {
     return null;
   }
+
+  return Option.match(Schema.decodeUnknownOption(AccessTokenClaims)(json), {
+    onNone: () => null,
+    onSome: (claims) => claims["https://api.openai.com/auth"]?.chatgpt_account_id ?? null,
+  });
 }
 
 /** Remember limits reported on a real inference response; costs no extra requests. */
 export async function recordUsageHeaders(
   storage: DurableObjectStorage,
-  providerId: string,
+  providerId: ProviderUsage["providerId"],
   headers: Record<string, string>,
   now = Date.now(),
 ) {
-  if (providerId !== "anthropic" && providerId !== "openai-codex") return;
-
   const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
 
   const windows =
@@ -253,7 +263,9 @@ async function fetchLive(
 
     if (!response.ok) throw new Error(`Anthropic usage returned HTTP ${response.status}`);
 
-    return anthropicUsageWindows(Schema.decodeUnknownSync(AnthropicUsage)(await response.json()));
+    return anthropicUsageWindows(
+      Schema.decodeUnknownSync(Schema.fromJsonString(AnthropicUsage))(await response.text()),
+    );
   }
 
   const headers = new Headers({ authorization: `Bearer ${token}` });
@@ -269,7 +281,10 @@ async function fetchLive(
 
   if (!response.ok) throw new Error(`ChatGPT usage returned HTTP ${response.status}`);
 
-  return codexUsageWindows(Schema.decodeUnknownSync(CodexUsage)(await response.json()), now);
+  return codexUsageWindows(
+    Schema.decodeUnknownSync(Schema.fromJsonString(CodexUsage))(await response.text()),
+    now,
+  );
 }
 
 /**
@@ -332,21 +347,23 @@ export async function forgetUsage(storage: DurableObjectStorage, providerId: str
 }
 
 /** Wrap a Pi stream function so every provider response reports its limit headers. */
-export function observeUsage<TApi extends Api>(
-  fn: StreamFunction<TApi>,
+export function observeUsage<TApi extends Api, TOptions extends StreamOptions>(
+  fn: StreamFunction<TApi, TOptions>,
   onHeaders: (headers: Record<string, string>) => void,
-): StreamFunction<TApi> {
-  return (model, context, options) =>
-    fn(model, context, {
-      ...options,
-      onResponse: async (response, m) => {
+): StreamFunction<TApi, TOptions> {
+  return (model, context, options) => {
+    const observed = Object.assign({}, options, {
+      onResponse: async (response: ProviderResponse, responseModel: Model<Api>) => {
         try {
           onHeaders(response.headers);
         } catch {
           // Usage is informational; never fail inference because of it.
         }
 
-        await options?.onResponse?.(response, m);
+        await options?.onResponse?.(response, responseModel);
       },
     });
+
+    return fn(model, context, observed);
+  };
 }

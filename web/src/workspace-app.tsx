@@ -34,6 +34,7 @@ import { ago } from "./lib/time";
 import { watchSession } from "./lib/session-stream";
 import { imagesBody, type Attachment } from "./lib/images";
 import { sessionList } from "./lib/session-list";
+import { effortName, modelName } from "./components/model-select";
 
 const storageKey = "dolly.sessions.v1";
 
@@ -320,6 +321,30 @@ export function WorkspaceApp() {
     }
   }
 
+  async function setThinkingLevel(level: string) {
+    const id = selected;
+    const previous = sessions.find((item) => item.id === id)?.thinkingLevel;
+
+    const apply = (value: string | undefined) =>
+      updateSessions((current) =>
+        current.map((item) => (item.id === id ? { ...item, thinkingLevel: value } : item)),
+      );
+
+    apply(level);
+
+    try {
+      await request(
+        `/sessions/${encodeURIComponent(id)}/settings`,
+        { thinkingLevel: level },
+        undefined,
+        "PUT",
+      );
+    } catch (cause) {
+      apply(previous);
+      setError(cause instanceof Error ? cause.message : "Could not change thinking effort.");
+    }
+  }
+
   function newSession() {
     setMobileOpen(false);
     setModal(codex === false && !anthropic ? "codex" : "new");
@@ -517,6 +542,8 @@ export function WorkspaceApp() {
                   queued={queued}
                   onSteerQueued={(id) => void steerQueued(id)}
                   model={session.model}
+                  thinkingLevel={session.thinkingLevel}
+                  onThinkingLevel={(level) => void setThinkingLevel(level)}
                 />
               </>
             ) : (
@@ -680,7 +707,10 @@ function SessionDetails({
       </section>
       <section>
         <h2>Model</h2>
-        <p>{session.model}</p>
+        <p title={session.model}>
+          {modelName(session.model)}
+          {session.thinkingLevel ? ` · ${effortName(session.thinkingLevel)} effort` : ""}
+        </p>
       </section>
       <section>
         <h2>Session</h2>

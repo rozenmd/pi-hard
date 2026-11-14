@@ -26,8 +26,16 @@ export const DEFAULT_CLAUDE_MODEL = "claude-sonnet-5-5";
 export const modelProvider = (model: string) =>
   model.startsWith("claude-") ? "anthropic" : "openai-codex";
 
+/** Pi's thinking levels; providers clamp unsupported levels to the nearest supported one. */
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export const ThinkingLevel = Schema.Literals(THINKING_LEVELS);
+export const DEFAULT_THINKING_LEVEL = "low";
+
+export const SessionSettings = Schema.Struct({ thinkingLevel: ThinkingLevel });
+
 export const NewSession = Schema.Struct({
   model: Schema.optional(SessionModel),
+  thinkingLevel: Schema.optional(ThinkingLevel),
   workspace: Schema.optional(WorkspaceInput),
 });
 

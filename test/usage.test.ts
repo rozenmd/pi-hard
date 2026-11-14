@@ -38,9 +38,10 @@ function claudeReply(extra: Record<string, string>) {
   );
 }
 
-type UsageRequest = { token: string } | { model: string } | { content: string; requestId: string };
+/** Request bodies these tests send to the Worker API. */
+type RequestBody = { token?: string; model?: string; content?: string; requestId?: string };
 
-const call = (path: string, method = "GET", body?: UsageRequest) =>
+const call = (path: string, method = "GET", body?: RequestBody) =>
   SELF.fetch(`https://worker/api${path}`, {
     method,
     headers,

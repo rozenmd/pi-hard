@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { request, Session, type ApiBody, type SavedSession } from "../lib/api";
 import { Modal, Textarea } from "./ui";
 import { ArrowUturnLeftIcon } from "@heroicons/react/16/solid";
-import { ModelPicker } from "./model-select";
+import { DEFAULT_EFFORT, EffortPicker, ModelPicker } from "./model-select";
 import { RepositoryPicker } from "./repositories";
 import { AttachButton, AttachmentTray, useAttachmentInput } from "./attachments";
 import { imagesBody, type Attachment } from "../lib/images";
@@ -26,6 +26,7 @@ export function NewSessionComposer({
   const [repository, setRepository] = useState(initial.workspace?.repository ?? "");
   const [ref, setRef] = useState(initial.workspace?.ref ?? "");
   const [model, setModel] = useState(initial.model ?? "");
+  const [effort, setEffort] = useState(initial.thinkingLevel ?? DEFAULT_EFFORT);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState<SavedSession | null>(null);
@@ -53,6 +54,7 @@ export function NewSessionComposer({
         const body: ApiBody = {};
 
         if (model) body.model = model;
+        body.thinkingLevel = effort;
 
         if (repository) {
           body.workspace = { repository };
@@ -164,6 +166,12 @@ export function NewSessionComposer({
             value={model}
             disabled={pending || Boolean(created)}
             onChange={setModel}
+          />
+          <EffortPicker
+            id="new-session-effort"
+            value={effort}
+            disabled={pending || Boolean(created)}
+            onChange={setEffort}
           />
           <button
             type="submit"

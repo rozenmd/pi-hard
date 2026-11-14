@@ -22,5 +22,9 @@ export default defineConfig({
       config: false,
     }),
   ],
-  test: { include: ["test/*.test.ts"] },
+  test: {
+    include: ["test/*.test.ts"],
+    // Avoid oversized warm-module WebSocket frames (workers-sdk#16349).
+    fsModuleCache: false,
+  },
 });

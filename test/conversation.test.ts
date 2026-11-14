@@ -539,3 +539,37 @@ it.each([
     expect(text).not.toContain("test-refresh");
   },
 );
+
+it("stores the requested thinking level and changes it for an existing session", async () => {
+  const created = await SELF.fetch("https://worker/api/sessions", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ thinkingLevel: "high" }),
+  });
+
+  expect(created.status).toBe(201);
+  const { id, thinkingLevel } = await created.json<{ id: string; thinkingLevel: string }>();
+  expect(thinkingLevel).toBe("high");
+
+  const level = async () => {
+    const sessions = await (
+      await SELF.fetch("https://worker/api/sessions", { headers })
+    ).json<{ id: string; thinkingLevel?: string }[]>();
+
+    return sessions.find((session) => session.id === id)?.thinkingLevel;
+  };
+
+  expect(await level()).toBe("high");
+
+  const settings = (body: string, session = id) =>
+    SELF.fetch(`https://worker/api/sessions/${session}/settings`, { method: "PUT", headers, body });
+
+  expect((await settings(JSON.stringify({ thinkingLevel: "xhigh" }))).status).toBe(200);
+  expect(await level()).toBe("xhigh");
+  expect((await settings(JSON.stringify({ thinkingLevel: "extreme" }))).status).toBe(400);
+  expect((await settings(JSON.stringify({ thinkingLevel: "low" }), "missing")).status).toBe(404);
+  expect(await level()).toBe("xhigh");
+
+  const plain = await SELF.fetch("https://worker/api/sessions", { method: "POST", headers });
+  expect((await plain.json<{ thinkingLevel: string }>()).thinkingLevel).toBe("low");
+});

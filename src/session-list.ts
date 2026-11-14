@@ -196,6 +196,7 @@ export async function listSessions(
       sessions.push({
         id: aliases.get(record.id) ?? String(record.id),
         model: agent.model?.modelId ?? "Existing session",
+        thinkingLevel: agent.thinkingLevel,
         title: redact(title || "Untitled session", secrets),
         repository: workspace?.config?.repository ?? "",
         ref: workspace?.config?.ref,
