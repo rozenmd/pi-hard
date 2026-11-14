@@ -5,12 +5,22 @@ description: Verify changes to Dolly itself with static checks and integration-f
 
 # Verify Dolly changes
 
+## Non-negotiable: fix everything verification flags
+
+**Every problem verification reports must be fixed before you proceed: before committing, pushing, opening or updating a PR, or reporting the work as done.** That covers lint errors, type errors, failing tests, broken builds and missing required evidence such as screenshots.
+
+- **It does not matter who caused it.** Pre-existing failures, failures inherited from `main`, failures from a merge and failures in files your change never touched all count. "Not my error", "unrelated" and "already broken on main" are never reasons to leave something broken. We all work toward the same goal: a green repository.
+- **Reporting a failure does not resolve it.** Listing it in a PR description, a summary or a "known issues" note is not a substitute for fixing it.
+- **Do not suppress problems to pass.** Disabling lint rules, adding `@ts-ignore` or `as any`, skipping tests or weakening assertions are not fixes unless the check is genuinely wrong. If it is, say why in the change.
+- **Stop only when you are truly blocked.** If a fix needs access, credentials, network hosts or a product decision you don't have, stop and tell the user exactly what is blocked and what you need. Do not quietly continue past the failure.
+- **Fix it in the current branch.** If the fix is large, ask the user whether it should go in a separate PR first; until they answer, the work is not done.
+
 1. Name the changed behavior, affected callers and observable pass condition. Reproduce a bug through the affected boundary before fixing it; establish a known-good baseline for a refactor.
 2. Run `pnpm verify` for formatting, lint and root/infra/web typechecks. It does not run tests, build, deploy or contact live product services. Inspect the diff after any generation commands. `pnpm check` is not the static-only equivalent: it also runs frontend unit tests.
 3. Prove changed behavior primarily with integration tests through real boundaries: HTTP handlers, Durable Objects/storage, built Worker routing, containers, Git, turn-end checkpoint recovery and dependency caching. Choose the affected scenarios and relevant failure cases; widen coverage for shared contracts. Add or extend integration coverage when the existing harness does not exercise the change.
 4. Use a small number of browser or live end-to-end journeys for critical behavior that needs them. Existing Playwright tests intercept API/WebSocket traffic: they prove browser interactions against fixtures, not real backend operations. Static checks and mocked internal behavior are not integration proof.
-5. Record the scenario, commands, observed output and side effects. State which boundaries were real, simulated or mocked. For visible UI changes, capture desktop and phone before/after screenshots or an interaction recording. Preserve evidence and clean up only resources the run created.
-6. Report results and gaps in the PR. Failed, skipped, unavailable or unexercised scenarios are unverified, not passes. Fix relevant failures; identify unrelated failures separately. Never claim live-system proof from local or fixture-backed tests.
+5. Record the scenario, commands, observed output and side effects. State which boundaries were real, simulated or mocked. For visible UI changes, capture desktop and phone before/after screenshots or an interaction recording; this is required, not optional, and a broken screenshot tool is a blocker to report, not a step to skip. Preserve evidence and clean up only resources the run created.
+6. Report results and gaps in the PR. Failed, skipped, unavailable or unexercised scenarios are unverified, not passes. Fix every failure, including pre-existing and inherited ones (see the non-negotiable rule above). Never claim live-system proof from local or fixture-backed tests.
 
 ## Coverage policy
 

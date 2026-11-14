@@ -68,7 +68,13 @@ import {
   AnthropicProbe,
 } from "./anthropic";
 import { Account, Credentials } from "./credentials";
-import { observeUsage, recordUsageHeaders, usageReport, forgetUsage } from "./usage";
+import {
+  observeUsage,
+  recordUsageHeaders,
+  usageReport,
+  forgetUsage,
+  type ProviderUsage,
+} from "./usage";
 import { CodexProtocol, startLogin, pollLogin, logout } from "./codex-login";
 import { GitHubAuth } from "./github-auth";
 import { exceptionDetails, redact } from "./diagnostics";
@@ -1082,7 +1088,7 @@ export class Agent extends DurableObject<Env> {
     );
   }
 
-  private usageObserver(providerId: string) {
+  private usageObserver(providerId: ProviderUsage["providerId"]) {
     return (headers: Record<string, string>) =>
       this.ctx.waitUntil(recordUsageHeaders(this.ctx.storage, providerId, headers).catch(() => {}));
   }
