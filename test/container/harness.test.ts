@@ -27,6 +27,7 @@ mkdir -p remotes/another-owner
   git config user.email fixture@example.com
   printf 'export const answer = 1;\n' > answer.mjs
   mkdir -p .agents/skills/verify
+  printf '%s\\n' 'echo started > /workspace/setup-started' 'for i in $(seq 1 120); do' '  if test -f /workspace/setup-release; then echo finished > /workspace/setup-finished; exit 0; fi' '  sleep 0.1' 'done' 'exit 19' > .agents/setup
   printf '%s\\n' '---' 'name: verify' 'description: Fixture repository verification' '---' 'Fixture full skill instructions' > .agents/skills/verify/SKILL.md
   git add . && git commit -m initial
  git push ../remotes/another-owner/project.git HEAD:main`);
@@ -74,9 +75,10 @@ mkdir -p remotes/another-owner
     {
       name: "shell",
       input: {
-        command: `printf 'export const answer = 2;\n' > answer.mjs; printf "import { answer } from './answer.mjs'; if (answer !== 2) throw Error('wrong answer');\\n" > test.mjs; node --test test.mjs`,
+        command: `set -eu; while ! test -f /workspace/setup-started; do sleep 0.1; done; test ! -f /workspace/setup-finished; touch /workspace/setup-release; printf 'export const answer = 2;\n' > answer.mjs; printf "import { answer } from './answer.mjs'; if (answer !== 2) throw Error('wrong answer');\\n" > test.mjs; node --test test.mjs`,
       },
     },
+    { name: "workspace", input: { action: "wait_for_dependencies" } },
     { name: "workspace", input: { action: "status" } },
     { name: "workspace", input: { action: "diff" } },
     { name: "workspace", input: { action: "commit", message: "Fix answer" } },
@@ -140,6 +142,15 @@ mkdir -p remotes/another-owner
       }
 
       const call = calls[generation++];
+
+      if (generation === 2) {
+        if (!workingSandboxId) throw new Error("Working sandbox is not configured");
+        expect(
+          await runInDurableObject(env.SANDBOX.getByName(workingSandboxId), async (_, state) =>
+            state.storage.get("workspace:setup"),
+          ),
+        ).toMatchObject({ state: "installing" });
+      }
 
       const item = call
         ? {
