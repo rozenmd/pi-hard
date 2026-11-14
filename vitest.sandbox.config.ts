@@ -15,5 +15,10 @@ export default defineConfig(async () => ({
       },
     }),
   ],
-  test: { include: ["test/container/*.test.ts"], testTimeout: 300_000 },
+  test: {
+    include: ["test/container/*.test.ts"],
+    testTimeout: 300_000,
+    // Avoid oversized warm-module WebSocket frames (workers-sdk#16349).
+    fsModuleCache: false,
+  },
 }));

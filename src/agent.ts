@@ -169,7 +169,7 @@ export class Agent extends DurableObject<Env> {
     const shell = {
       name: "shell",
       description:
-        "Run a shell command in the active repository's isolated Linux checkout (or /workspace if none). Use workspace checkout to switch repositories in this same conversation; other live checkouts are preserved. Git credentials stay outside the container. Only configured network hosts are reachable. Output is capped at 32 KiB per stream and time at 60 seconds. Repository files are snapshotted once after the agent turn answers, not after each command. Changes since the last successful turn-end save can be lost on container shutdown or restart. Push important work to GitHub for long-term storage.",
+        "Run a shell command in the active repository's isolated Linux checkout (or /workspace if none). Dependency setup runs in the background: use workspace action wait_for_dependencies before builds, tests, starting a dev server, or changing dependency inputs; file reads and ordinary shell commands do not wait. Use workspace checkout to switch repositories in this same conversation; other live checkouts are preserved. Git credentials stay outside the container. Only configured network hosts are reachable. Output is capped at 32 KiB per stream and time at 60 seconds. Repository files are snapshotted once after the agent turn answers, not after each command. Changes since the last successful turn-end save can be lost on container shutdown or restart. Push important work to GitHub for long-term storage.",
       parameters: obj({ command: str() }),
       replay: "unsafe",
       executionMode: "sequential",
@@ -247,7 +247,7 @@ export class Agent extends DurableObject<Env> {
     const workspaceTool = {
       name: "workspace",
       description:
-        "Work across repositories in this conversation. Always supply action. checkout/attach require repository (optional ref), commit requires message, and open_pull_request requires title and body. When the user mentions another repository, use action repositories to resolve its enrolled name, then action attach with owner/repo or a unique enrolled short name. Ask if a name is ambiguous. Attach creates or activates an isolated checkout without replacing the optional primary repository or disturbing other live checkouts. Shell, read_file, status, diff, commit, push and open_pull_request use the active repository. Each repository has its own sandbox; files are not shared between checkouts. Switch back with attach or checkout. Checkout sets a primary only if none exists. Never require a new conversation just to use another repo. diagnostics works even when checkout fails and reports the last saved turn and any save error. Files are saved once at the end of an answered agent turn, not after each command. restart bypasses checkout, discards changes since the last successful save, and restores that snapshot on the next repository tool. Use only after explicit user confirmation and supply discardUncheckpointed=true. Missing or expired snapshots fail closed; no saved snapshot means a fresh checkout of the configured ref. Mutations are not automatically replayed; inspect state after interruption.",
+        "Work across repositories in this conversation. Always supply action. checkout/attach require repository (optional ref), commit requires message, and open_pull_request requires title and body. Checkout returns as soon as Git is ready; dependencies and cache publication continue in the background. Use wait_for_dependencies before builds, tests, preview startup or editing dependency inputs; it returns ready or warning with setup errors. When the user mentions another repository, use action repositories to resolve its enrolled name, then action attach with owner/repo or a unique enrolled short name. Ask if a name is ambiguous. Attach creates or activates an isolated checkout without replacing the optional primary repository or disturbing other live checkouts. Shell, read_file, status, diff, commit, push and open_pull_request use the active repository. Each repository has its own sandbox; files are not shared between checkouts. Switch back with attach or checkout. Checkout sets a primary only if none exists. Never require a new conversation just to use another repo. diagnostics works even when checkout fails and reports the last saved turn and any save error. Files are saved once at the end of an answered agent turn, not after each command. restart bypasses checkout, discards changes since the last successful save, and restores that snapshot on the next repository tool. Use only after explicit user confirmation and supply discardUncheckpointed=true. Missing or expired snapshots fail closed; no saved snapshot means a fresh checkout of the configured ref. Mutations are not automatically replayed; inspect state after interruption.",
       parameters: workspaceSchema,
       replay: "unsafe",
       executionMode: "sequential",
@@ -948,6 +948,8 @@ export class Agent extends DurableObject<Env> {
         return workspace;
       case "status":
         return sandbox.run("git status --short --branch");
+      case "wait_for_dependencies":
+        return sandbox.waitForDependencies();
       case "diff":
         return sandbox.run("git diff --binary HEAD");
       case "commit":

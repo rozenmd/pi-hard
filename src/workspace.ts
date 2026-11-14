@@ -65,6 +65,7 @@ export const WorkspaceRequest = Schema.Union([
     ref: WorkspaceInput.fields.ref,
   }),
   Schema.Struct({ action: Schema.Literal("status") }),
+  Schema.Struct({ action: Schema.Literal("wait_for_dependencies") }),
   Schema.Struct({ action: Schema.Literal("diff") }),
   Schema.Struct({
     action: Schema.Literal("commit"),
@@ -88,6 +89,7 @@ export const WorkspaceToolInput = Schema.Struct({
     "checkout",
     "attach",
     "status",
+    "wait_for_dependencies",
     "diff",
     "commit",
     "push",

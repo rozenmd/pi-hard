@@ -176,7 +176,8 @@ it("starts setup asynchronously and makes concurrent tools join one checkout/ins
       await expect
         .poll(() => state.storage.get("workspace:setup"))
         .toMatchObject({ state: "installing" });
-      expect(toolDone).toBe(false);
+      await tool;
+      expect(toolDone).toBe(true);
       expect(await instance.diagnostics()).toMatchObject({
         setup: { state: "installing" },
       });
@@ -224,8 +225,10 @@ it("reports dependency setup warnings without blocking checkout or repeating set
           return "Package registry is unavailable";
         }),
     });
-    expect(await instance.prepare(config)).toMatchObject({
-      setup: { state: "warning", error: "Package registry is unavailable" },
+    await instance.prepare(config);
+    expect(await instance.waitForDependencies()).toMatchObject({
+      state: "warning",
+      error: "Package registry is unavailable",
     });
     await instance.prepare(config);
     expect(installs).toBe(1);
@@ -240,7 +243,7 @@ it("cancels dependency setup before restarting", async () => {
     Object.assign(instance, {
       container: () => Effect.succeed({ interceptAllOutboundHttp: async () => {} }),
       execute: (command: string) =>
-        command.endsWith("python3 /usr/local/lib/dolly-setup.py")
+        command.endsWith("python3 /usr/local/lib/dolly-setup.py --once")
           ? Effect.sync(() => {
               installing = true;
             }).pipe(

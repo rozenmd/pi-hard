@@ -86,6 +86,8 @@ export class Sandbox extends DurableObject<Env> {
   private prepared = false;
   private setupAbort: AbortController | undefined;
   private setupOperations = 0;
+  private dependencySetup: Promise<void> | undefined;
+  private dependencyAbort: AbortController | undefined;
   private readonly loopback: SandboxState["exports"];
   private preview?: RunningPreview;
 
@@ -113,6 +115,15 @@ export class Sandbox extends DurableObject<Env> {
       );
 
       if (!wasRunning) {
+        // Reap any installer belonging to the previous container before
+        // authorizing or starting setup in its replacement.
+        this.dependencyAbort?.abort();
+        yield* attempt(
+          "workspace.dependencies.cleanup",
+          () => this.dependencySetup ?? Promise.resolve(),
+        );
+        this.dependencySetup = undefined;
+        this.dependencyAbort = undefined;
         yield* attempt("workspace.start", () =>
           Promise.resolve(
             container.start({
@@ -184,6 +195,7 @@ export class Sandbox extends DurableObject<Env> {
           this.prepared =
             ready.exitCode === 0 &&
             ((!wasRunning && Boolean(snapshot)) ||
+              setup?.state === "installing" ||
               setup?.state === "ready" ||
               setup?.state === "warning");
         }
@@ -356,6 +368,19 @@ export class Sandbox extends DurableObject<Env> {
           const container = yield* this.container();
 
           if (!this.prepared) return null;
+
+          const setup = yield* attempt("workspace.setup.read", () =>
+            this.ctx.storage.get<WorkspaceSetup>("workspace:setup"),
+          );
+
+          if (setup?.state === "installing") this.startDependencySetup(container);
+
+          // Setup writes the same filesystem. Join it without making reads or
+          // shell commands wait; never snapshot a partially restored archive.
+          yield* attempt(
+            "workspace.dependencies.wait",
+            () => this.dependencySetup ?? Promise.resolve(),
+          );
           const started = Date.now();
           yield* Effect.logInfo({
             event: "workspace_checkpoint_started",
@@ -410,9 +435,11 @@ export class Sandbox extends DurableObject<Env> {
     );
   }
 
-  private installDependencies = Effect.fn("Sandbox.installDependencies")(function* (this: Sandbox) {
+  private installDependencies = Effect.fn("Sandbox.installDependencies")(function* (
+    this: Sandbox,
+    container: Container,
+  ) {
     const started = Date.now();
-    const container = yield* this.container();
 
     const workspace = yield* attempt("workspace.read", () =>
       this.ctx.storage.get<WorkspaceConfig>("workspace"),
@@ -428,36 +455,59 @@ export class Sandbox extends DurableObject<Env> {
 
     const ordinaryOutbound = this.loopback.WorkspaceOutbound({ props: workspace });
 
-    yield* attempt("workspace.cache.enable", () =>
-      container.interceptAllOutboundHttp(setupOutbound),
-    );
+    return yield* Effect.acquireUseRelease(
+      attempt("workspace.cache.enable", () => container.interceptAllOutboundHttp(setupOutbound)),
+      () =>
+        Effect.gen({ self: this }, function* () {
+          const result = yield* this.execute(
+            `DOLLY_DEPENDENCY_CACHE_TOKEN=${token} python3 /usr/local/lib/dolly-setup.py --once`,
+            "/workspace/repo",
+            900,
+            container,
+          );
 
-    return yield* Effect.gen({ self: this }, function* () {
-      const result = yield* this.execute(
-        `DOLLY_DEPENDENCY_CACHE_TOKEN=${token} python3 /usr/local/lib/dolly-setup.py`,
-        "/workspace/repo",
-        900,
-      );
+          yield* Effect.logInfo({
+            event: "workspace_dependencies_completed",
+            sandboxId: String(this.ctx.id),
+            elapsedMs: Date.now() - started,
+            exitCode: result.exitCode,
+          });
 
-      yield* Effect.logInfo({
-        event: "workspace_dependencies_completed",
-        sandboxId: String(this.ctx.id),
-        elapsedMs: Date.now() - started,
-        exitCode: result.exitCode,
-      });
-
-      return result.exitCode === 0
-        ? undefined
-        : redact(result.stderr || result.stdout || `Setup exited ${result.exitCode}`).slice(-2000);
-    }).pipe(
-      Effect.ensuring(
+          return result.exitCode === 0
+            ? undefined
+            : redact(result.stderr || result.stdout || `Setup exited ${result.exitCode}`).slice(
+                -2000,
+              );
+        }),
+      () =>
         attempt("workspace.cache.disable", () =>
           container.interceptAllOutboundHttp(ordinaryOutbound),
         ).pipe(Effect.orDie),
-      ),
-      Effect.catchCause((cause) => Effect.succeed(redact(Cause.pretty(cause)).slice(-2000))),
-    );
+    ).pipe(Effect.catchCause((cause) => Effect.succeed(redact(Cause.pretty(cause)).slice(-2000))));
   });
+
+  private startDependencySetup(container: Container) {
+    if (this.dependencySetup) return;
+
+    const controller = new AbortController();
+    this.dependencyAbort = controller;
+
+    // No foreground permit: checkout-ready tools must not queue behind installs
+    // or cache publication. Retain ownership for cancellation and checkpoints.
+    this.dependencySetup = Effect.runPromise(
+      Effect.gen({ self: this }, function* () {
+        const warning = yield* this.installDependencies(container).pipe(
+          Effect.catchCause((cause) => Effect.succeed(redact(Cause.pretty(cause)).slice(-2000))),
+        );
+
+        yield* this.setupStatus(warning ? "warning" : "ready", warning);
+      }),
+      { signal: controller.signal },
+    ).catch(async (error) => {
+      await Effect.runPromise(this.setupStatus("warning", exceptionDetails(error).message));
+    });
+    this.ctx.waitUntil(this.dependencySetup);
+  }
 
   /** Persist intent before returning; tools join the same serialized prepare. */
   async warm(config: WorkspaceConfig) {
@@ -519,7 +569,7 @@ export class Sandbox extends DurableObject<Env> {
     }
 
     // Initialize first so a restarted container never uses a stale warm flag.
-    yield* this.container();
+    const container = yield* this.container();
 
     const info = {
       repository: config.repository,
@@ -527,20 +577,26 @@ export class Sandbox extends DurableObject<Env> {
       ref: config.ref ?? "HEAD",
     };
 
-    if (this.prepared)
+    if (this.prepared) {
+      const setup = yield* attempt("workspace.setup.read", () =>
+        this.ctx.storage.get<WorkspaceSetup>("workspace:setup"),
+      );
+
+      // A live container can outlast its DO. The container-side lock/result
+      // joins an existing installer rather than starting a second one.
+      if (setup?.state === "installing") this.startDependencySetup(container);
+
       return {
         ...info,
-        setup: yield* attempt("workspace.setup.read", () =>
-          this.ctx.storage.get<WorkspaceSetup>("workspace:setup"),
-        ),
+        setup,
       };
+    }
 
     yield* this.setupStatus("checkout");
     yield* this.checkout(config);
     yield* this.setupStatus("installing");
-    const warning = yield* this.installDependencies();
-    yield* this.setupStatus(warning ? "warning" : "ready", warning);
     this.prepared = true;
+    this.startDependencySetup(container);
 
     return {
       ...info,
@@ -571,6 +627,31 @@ export class Sandbox extends DurableObject<Env> {
           ),
         ),
     );
+  }
+
+  async waitForDependencies() {
+    const config = await this.ctx.storage.get<WorkspaceConfig>("workspace");
+
+    if (!config)
+      throw new OperationError({
+        operation: "workspace.dependencies.wait",
+        message: "No repository is configured",
+        details: null,
+      });
+
+    await this.prepare(config);
+    await this.dependencySetup;
+
+    const setup = await this.ctx.storage.get<WorkspaceSetup>("workspace:setup");
+
+    if (!setup)
+      throw new OperationError({
+        operation: "workspace.dependencies.wait",
+        message: "Workspace setup status is missing",
+        details: null,
+      });
+
+    return setup;
   }
 
   run(command: string) {
@@ -883,6 +964,8 @@ export class Sandbox extends DurableObject<Env> {
   async restart() {
     // Do not queue a restart behind a hung dependency install.
     this.setupAbort?.abort();
+    this.dependencyAbort?.abort();
+    await this.dependencySetup;
 
     return Effect.runPromise(
       this.permit.withPermit(
@@ -893,6 +976,8 @@ export class Sandbox extends DurableObject<Env> {
             yield* attempt("workspace.restart", () => this.ctx.container!.destroy());
           this.initialized = false;
           this.prepared = false;
+          this.dependencySetup = undefined;
+          this.dependencyAbort = undefined;
         }),
       ),
     );

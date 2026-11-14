@@ -561,7 +561,9 @@ for (const repository of ["octocat/project", ""]) {
     await dialog.getByRole("button", { name: "Retry", exact: true }).click();
     await expect(dialog).not.toBeVisible();
     expect(creates).toEqual([
-      config ? { model: source.model, workspace: config } : { model: source.model },
+      config
+        ? { model: source.model, thinkingLevel: "low", workspace: config }
+        : { model: source.model, thinkingLevel: "low" },
     ]);
     expect(messages).toHaveLength(2);
     expect(messages[0]).toEqual(messages[1]);
@@ -634,7 +636,10 @@ test("enrolls an App repository and anchors a new workspace to its default branc
   );
   await dialog.getByRole("button", { name: "Create", exact: true }).click();
   await expect(dialog).not.toBeVisible();
-  expect(created).toEqual({ workspace: { repository: "octocat/project", ref: "develop" } });
+  expect(created).toEqual({
+    thinkingLevel: "low",
+    workspace: { repository: "octocat/project", ref: "develop" },
+  });
 });
 
 /** A browser that is already signed in with GitHub and ChatGPT, with no saved workspaces. */
