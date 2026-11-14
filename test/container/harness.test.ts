@@ -381,6 +381,7 @@ mkdir -p remotes/another-owner
     expect(await snapshotPointer()).toEqual(answeredTurn);
 
     const dirty = await sandbox.run(`set -eu
+test "$(pwd)" = /workspace/repo
 test ! -L /workspace/repo
 test -d .git
 test "$(git rev-parse --is-shallow-repository)" = true
